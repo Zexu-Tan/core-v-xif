@@ -10,6 +10,9 @@ dependencies:
     rev: v2.0.0-beta.2
 
 sources:
-  - files:
+  - target: interface
+    files:
       - src/core_v_xif.sv
+    
+  - files:
       - src/cvxif_demux.sv
