@@ -19,9 +19,12 @@
 //
 // Coprocessors are expected to be compliant with the specification, in
 // particular:
-// - `issue_resp.accept` is a combinational function of `issue_req`, valid
-//   whenever `issue_valid` is asserted, and mutually exclusive across
-//   coprocessors.
+// - `issue_resp` (and so `accept`) is only valid once the coprocessor has
+//   also asserted its own `issue_ready` for this instruction. A coprocessor
+//   may hold `issue_ready` low while it is still deliberating (e.g. due to a
+//   structural hazard), in which case `accept` must not yet be trusted.
+//   Once every coprocessor has asserted `issue_ready`, at most one of them
+//   may have `accept` set (mutually exclusive across coprocessors).
 // - `register_ready` is asserted only for an instruction the coprocessor
 //   accepted.
 // - The commit transaction is tolerated for `id`s the coprocessor never
@@ -84,6 +87,7 @@ module cvxif_demux #(
 
   // Broadcast the issue request, the register transaction and (below) the commit
   // transaction to every coprocessor, and collect the per-coprocessor accept bit.
+  // `accept` is only valid once `issue_ready` is also asserted, so mask it here.
   logic [NumCopro-1:0] accept;
   for (genvar i = 0; i < NumCopro; i++) begin : gen_copro
     assign copro_issue_req_o[i]      = cpu_issue_req_i;
@@ -92,10 +96,15 @@ module cvxif_demux #(
     assign copro_register_valid_o[i] = cpu_register_valid_i;
     assign copro_commit_o[i]         = cpu_commit_i;
     assign copro_commit_valid_o[i]   = cpu_commit_valid_i;
-    assign accept[i]                 = copro_issue_resp_i[i].accept;
+    assign accept[i]                 = copro_issue_resp_i[i].accept & copro_issue_ready_i[i];
   end
   logic any_accept;
   assign any_accept = |accept;
+
+  // True once every coprocessor has resolved its own `issue_ready`, i.e. none
+  // is still deliberating - only then is "no accept" a valid rejection.
+  logic all_issue_ready;
+  assign all_issue_ready = &copro_issue_ready_i;
 
   // De-multiplex the issue response. Since at most one coprocessor accepts, and
   // the `writeback`/`register_read` fields are only meaningful for the accepting
@@ -115,11 +124,11 @@ module cvxif_demux #(
   // Combined handshake. The CPU (Snitch) advances its offload state on the issue
   // handshake but stalls its pipeline on both the issue and register readys, so
   // the two must be asserted atomically and only for the accepting coprocessor.
-  // When no coprocessor accepts, complete the handshake immediately so the CPU
-  // can flag the instruction as illegal.
+  // When no coprocessor accepts, only complete once all_issue_ready holds, so a
+  // coprocessor still deliberating is never misread as a rejection.
   logic handshake;
-  assign handshake = any_accept ? |(accept & copro_issue_ready_i & copro_register_ready_i)
-                                : 1'b1;
+  assign handshake = any_accept ? |(accept & copro_register_ready_i)
+                                : all_issue_ready;
   assign cpu_issue_ready_o    = handshake;
   assign cpu_register_ready_o = handshake;
 
