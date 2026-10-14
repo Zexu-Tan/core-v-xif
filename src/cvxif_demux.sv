@@ -30,6 +30,13 @@
 // - The commit transaction is tolerated for `id`s the coprocessor never
 //   accepted.
 // - Outputs are driven to 0 when idle, so the response reductions are clean.
+//
+// Exception extension (snitch-cassia): `x_issue_resp_t` carries `exc` and `exccode`. When no
+// coprocessor accepts, the exception reported by a rejecting coprocessor (exc = 1, valid only
+// together with its `issue_ready`) is forwarded to the CPU, which takes it instead of an illegal
+// instruction. If several rejecting coprocessors report exc, the lowest port index wins (port 0
+// = ExternalCopro in snitch_cc, i.e. the coprocessor that owns the encoding space in question).
+// When a coprocessor accepts, `exc` / `exccode` of the CPU response are 0.
 
 `include "common_cells/assertions.svh"
 
@@ -117,6 +124,16 @@ module cvxif_demux #(
       if (accept[i]) begin
         cpu_issue_resp_o.writeback     |= copro_issue_resp_i[i].writeback;
         cpu_issue_resp_o.register_read |= copro_issue_resp_i[i].register_read;
+      end
+    end
+    // No accept: forward a rejecting coprocessor's exception; descending loop so that the lowest
+    // port index with exc set is the last assignment and wins.
+    if (!any_accept) begin
+      for (int i = NumCopro - 1; i >= 0; i--) begin
+        if (copro_issue_ready_i[i] && copro_issue_resp_i[i].exc) begin
+          cpu_issue_resp_o.exc     = 1'b1;
+          cpu_issue_resp_o.exccode = copro_issue_resp_i[i].exccode;
+        end
       end
     end
   end
